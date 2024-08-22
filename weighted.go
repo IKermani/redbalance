@@ -3,6 +3,7 @@ package redbalance
 import (
 	"crypto/md5"
 	"fmt"
+	"github.com/smallnest/weighted"
 	"golang.org/x/net/idna"
 	"math/rand"
 	"net"
@@ -12,8 +13,8 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	"github.com/fufuok/balancer"
 	"github.com/miekg/dns"
-	"github.com/smallnest/weighted"
 )
 
 const (
@@ -30,7 +31,7 @@ type (
 		md5sum     [md5.Size]byte
 		sniServers []*weightItem
 		domains    map[domain]matchPattern
-		rrw        weighted.RRW
+		rrw        balancer.Balancer
 		randomGen
 		mutex sync.Mutex
 	}
@@ -113,6 +114,7 @@ func createWeightedFuncs(weightFileName string,
 			fileName:  weightFileName,
 			reload:    reload,
 			randomGen: &randomUint{},
+			rrw:       balancer.NewWeightedRoundRobin(nil),
 		},
 	}
 	lb.weighted.randomGen.randInit()
@@ -138,14 +140,12 @@ func createWeightedFuncs(weightFileName string,
 func (w *weightedRR) weightedRoundRobin(domain string, r *dns.Msg) *dns.Msg {
 	for d, pattern := range w.domains {
 		if matchDomainPattern(domain, string(d), string(pattern)) {
-			selectedServer := w.lvsRoundRobin()
-			if selectedServer != nil {
-				m := new(dns.Msg)
-				m.SetReply(r)
-				hdr := dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}
-				m.Answer = []dns.RR{&dns.A{Hdr: hdr, A: selectedServer.address}}
-				return m
-			}
+			selectedServer := w.rrw.Select()
+			m := new(dns.Msg)
+			m.SetReply(r)
+			hdr := dns.RR_Header{Name: domain, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300}
+			m.Answer = []dns.RR{&dns.A{Hdr: hdr, A: net.ParseIP(selectedServer)}}
+			return m
 		}
 	}
 
@@ -178,72 +178,6 @@ func (w *weightedRR) lvsRoundRobin() *weightItem {
 	}
 	return nil
 }
-
-// Move the next expected address to the first position in the result list
-//func (w *weightedRR) setTopRecord(address []dns.RR) {
-//	itop := w.topAddressIndex(address)
-//
-//	if itop < 0 {
-//		// internal error
-//		return
-//	}
-//
-//	if itop != 0 {
-//		// swap the selected top entry with the actual one
-//		address[0], address[itop] = address[itop], address[0]
-//	}
-//}
-
-// Compute the top (first) address index
-//func (w *weightedRR) topAddressIndex(address []dns.RR) int {
-//	w.mutex.Lock()
-//	defer w.mutex.Unlock()
-//
-//	// Determine the weight value for each address in the answer
-//	var wsum uint
-//	type waddress struct {
-//		index  int
-//		weight uint8
-//	}
-//	weightedAddr := make([]waddress, len(address))
-//	for i, ar := range address {
-//		wa := &weightedAddr[i]
-//		wa.index = i
-//		wa.weight = 1 // default weight
-//		var ip net.IP
-//		switch ar.Header().Rrtype {
-//			case dns.TypeA:
-//				ip = ar.(*dns.A).A
-//			case dns.TypeAAAA:
-//				ip = ar.(*dns.AAAA).AAAA
-//		}
-//		ws := w.domains[ar.Header().Name]
-//		for _, w := range ws {
-//			if w.address.Equal(ip) {
-//				wa.weight = w.value
-//				break
-//			}
-//		}
-//		wsum += uint(wa.weight)
-//	}
-//
-//	// Select the first (top) IP
-//	sort.Slice(weightedAddr, func(i, j int) bool {
-//		return weightedAddr[i].weight > weightedAddr[j].weight
-//	})
-//	v := w.randUint(wsum)
-//	var psum uint
-//	for _, wa := range weightedAddr {
-//		psum += uint(wa.weight)
-//		if v < psum {
-//			return wa.index
-//		}
-//	}
-//
-//	// we should never reach this
-//	log.Errorf("Internal error: cannot find top address (randv:%v wsum:%v)", v, wsum)
-//	return -1
-//}
 
 // Start go routine to update weights from the weight file periodically
 func (w *weightedRR) periodicWeightUpdate(stopReload <-chan bool) {
@@ -355,5 +289,15 @@ func (w *weightedRR) updateSNIServerBandwidth() error {
 	w.mutex.Lock()
 	w.sniServers = _sniServers
 	w.mutex.Unlock()
+
+	// Convert the slice of *weightItem to a map[string]int
+	sniServerMap := make(map[string]int)
+	for _, item := range _sniServers {
+		sniServerMap[item.address.String()] = int(item.value)
+	}
+
+	// Update the weighted round-robin balancer with the map
+	w.rrw.Update(sniServerMap)
+
 	return nil
 }

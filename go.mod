@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.11.3
+	github.com/fufuok/balancer v1.0.0
 	github.com/miekg/dns v1.1.62
 	github.com/redis/go-redis/v9 v9.6.1
 	github.com/smallnest/weighted v0.0.0-20230419055410-36b780e40a7a
