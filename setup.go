@@ -93,8 +93,11 @@ func parse(c *caddy.Controller) (*lbFuncs, error) {
 						return nil, err
 					}
 
-					// host should be a valid IP
-					if net.ParseIP(host) == nil {
+					// check if the host is domain
+					_, err = net.LookupHost(host)
+
+					// check host should be a valid IP or a domain
+					if net.ParseIP(host) == nil && err != nil {
 						return nil, c.Errf("invalid address '%s'", a[0])
 					}
 
